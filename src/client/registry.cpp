@@ -401,15 +401,20 @@ public:
     template<class T, typename WL>
     T *create(quint32 name, quint32 version, QObject *parent, WL *(Registry::*bindMethod)(uint32_t, uint32_t) const);
 
+    wl_display *display;
     WaylandPointer<wl_registry, wl_registry_destroy> registry;
     static const struct wl_callback_listener s_callbackListener;
     WaylandPointer<wl_callback, wl_callback_destroy> callback;
     EventQueue *queue = nullptr;
 
+    struct wl_reconnect_listener *reconnect_listener = nullptr;
+    static void wlReset(void *data);
+
 private:
     void handleAnnounce(uint32_t name, const char *interface, uint32_t version);
     void handleRemove(uint32_t name);
     void handleGlobalSync();
+    void handleReset();
     static void globalAnnounce(void *data, struct wl_registry *registry, uint32_t name, const char *interface, uint32_t version);
     static void globalRemove(void *data, struct wl_registry *registry, uint32_t name);
     static void globalSync(void *data, struct wl_callback *callback, uint32_t serial);
@@ -448,6 +453,10 @@ Registry::~Registry()
 
 void Registry::release()
 {
+    if (d->reconnect_listener) {
+        wl_list_remove(&d->reconnect_listener->link);
+        delete d->reconnect_listener;
+    }
     d->registry.release();
     d->callback.release();
 }
@@ -463,12 +472,18 @@ void Registry::create(wl_display *display)
 {
     Q_ASSERT(display);
     Q_ASSERT(!isValid());
+    d->display = display;
     d->registry.setup(wl_display_get_registry(display));
     d->callback.setup(wl_display_sync(display));
     if (d->queue) {
         d->queue->addProxy(d->registry);
         d->queue->addProxy(d->callback);
     }
+
+    d->reconnect_listener = new wl_reconnect_listener;
+    d->reconnect_listener->notify = &Registry::Private::wlReset;
+    d->reconnect_listener->user_data = d.data();
+    wl_display_add_reconnect_listener(display, d->reconnect_listener);
 }
 
 void Registry::create(ConnectionThread *connection)
@@ -579,6 +594,29 @@ void Registry::Private::handleRemove(uint32_t name)
         }
     }
     Q_EMIT q->interfaceRemoved(name);
+}
+
+void Registry::Private::wlReset(void *data)
+{
+    auto r = reinterpret_cast<Registry::Private *>(data);
+    r->handleReset();
+}
+
+void Registry::Private::handleReset()
+{
+    for (auto it = m_interfaces.constBegin(); it != m_interfaces.constEnd(); ++it) {
+        auto sit = s_interfaces.find(it->interface);
+        Q_EMIT(q->*sit.value().removedSignal)(it->name);
+        Q_EMIT q->interfaceRemoved(it->name);
+    }
+    m_interfaces.clear();
+    registry.setup(wl_display_get_registry(display));
+    callback.setup(wl_display_sync(display));
+    if (queue) {
+        queue->addProxy(registry);
+        queue->addProxy(callback);
+    }
+    setup();
 }
 
 bool Registry::Private::hasInterface(Registry::Interface interface) const
