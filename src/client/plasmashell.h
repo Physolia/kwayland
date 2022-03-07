@@ -251,6 +251,11 @@ public:
     void setPosition(const QPoint &point);
 
     /**
+     * Request that the initial position of this surface will be under the cursor
+     **/
+    void openUnderCursor();
+
+    /**
      * Describes how a PlasmaShellSurface with role @c Role::Panel should behave.
      * @see Role
      **/
